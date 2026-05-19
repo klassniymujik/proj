@@ -4,7 +4,6 @@ const CALIB_KEY = "rv_analytics_calib_by_camera";
 const HEAT_ROWS = 60;
 const HEAT_COLS = 60;
 const MAX_TRAIL_POINTS = 120;
-const NON_ACTIVE_HEAT_WEIGHT = 0.2;
 
 class AnalyticsPage {
   constructor() {
@@ -306,7 +305,6 @@ class AnalyticsPage {
   }
 
   applyDecayAndAccumulate(camerasPayload) {
-    const activeCam = this.activeCalibCamera === null ? null : String(this.activeCalibCamera);
     for (let r = 0; r < HEAT_ROWS; r++) {
       for (let c = 0; c < HEAT_COLS; c++) this.heatAccum[r][c] *= 0.97;
     }
@@ -319,10 +317,9 @@ class AnalyticsPage {
     //
     // Если trail для cid ещё нет (только промоутился) — fallback на
     // среднее, чтобы heatmap всё равно реагировал.
-    const aggPerCid = new Map();  // cid → { perCam: Map<camKey, {x,z}>, hasActiveCam }
+    const aggPerCid = new Map();  // cid → { perCam: Map<camKey, {x,z}> }
     (camerasPayload || []).forEach(cam => {
       const camKey = String(cam.id);
-      const isActive = (activeCam === null) || (camKey === activeCam);
       (cam.points || []).forEach(p => {
         if (p.confirmed_id == null) return;  // tentative — пропускаем
         if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) return;
@@ -330,11 +327,10 @@ class AnalyticsPage {
         if (!Number.isFinite(cp.x) || !Number.isFinite(cp.z)) return;
         let agg = aggPerCid.get(p.confirmed_id);
         if (!agg) {
-          agg = { perCam: new Map(), hasActiveCam: false };
+          agg = { perCam: new Map() };
           aggPerCid.set(p.confirmed_id, agg);
         }
         agg.perCam.set(camKey, { x: cp.x, z: cp.z });
-        if (isActive) agg.hasActiveCam = true;
       });
     });
 
@@ -353,11 +349,10 @@ class AnalyticsPage {
       }
       if (!pos) return;
 
-      const weight = agg.hasActiveCam ? 1.0 : NON_ACTIVE_HEAT_WEIGHT;
       const col = Math.floor((pos.x / Math.max(this.sceneW, 0.001)) * HEAT_COLS);
       const row = Math.floor((pos.z / Math.max(this.sceneH, 0.001)) * HEAT_ROWS);
       if (row >= 0 && row < HEAT_ROWS && col >= 0 && col < HEAT_COLS) {
-        this.heatAccum[row][col] += weight;
+        this.heatAccum[row][col] += 1.0;
       }
     });
   }

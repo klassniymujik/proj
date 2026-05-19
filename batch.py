@@ -127,7 +127,7 @@ def _prepare_camera(cam_id, frame, det_list, tracker, mapper,
 
 
 def _run_reid_for_camera(cam_id, objects_world_tmp, need_desc, desc_map,
-                          last_desc_cache, reid_mgr):
+                          last_desc_cache, reid_mgr, advance_frame=False):
     """
     Синхронная часть: ReID assign + end_frame.
     Должна вызываться ПОСЛЕДОВАТЕЛЬНО для всех камер в одном потоке,
@@ -168,7 +168,7 @@ def _run_reid_for_camera(cam_id, objects_world_tmp, need_desc, desc_map,
                 "y": obj["wy"],
                 "bbox": obj["bbox"],
             })
-        reid_mgr.end_frame(cam_id, active_lids)
+        reid_mgr.end_frame(cam_id, active_lids, advance_frame=advance_frame)
     else:
         for obj in objects_world_tmp:
             lid = obj["local_id"]
@@ -377,8 +377,12 @@ def batch_loop(cam_cfgs, stop):
             objects_world = _run_reid_for_camera(
                 cam_id, owt, nd, dm,
                 desc_caches[cam_idx], reid_mgr,
+                advance_frame=False,
             )
             per_cam_results.append((cam_idx, objects_world))
+
+        if reid_mgr is not None:
+            reid_mgr.advance_frame()
 
         # Снимок total_unique ОДИН раз после всех assign/end_frame,
         # чтобы все камеры показывали одно и то же значение.

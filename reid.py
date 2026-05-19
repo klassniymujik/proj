@@ -67,6 +67,26 @@ _INPUT_W = 128
 _MEAN_T = None
 _STD_T = None
 
+_OSNET_WEIGHTS_FILE = (
+    "osnet_ain_x1_0_msmt17_256x128_amsgrad_ep50_lr0.0015_"
+    "coslr_b64_fb10_softmax_labsmth_flip_jitter.pth"
+)
+
+
+def _candidate_weight_paths():
+    env_path = os.environ.get("REID_WEIGHTS_PATH")
+    if env_path:
+        yield env_path
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    for root in (
+        here,
+        os.path.dirname(here),
+        os.path.dirname(os.path.dirname(here)),
+        os.getcwd(),
+    ):
+        yield os.path.join(root, "reid_weights", _OSNET_WEIGHTS_FILE)
+
 
 def preload_reid():
     model = _get_reid_model()
@@ -100,21 +120,22 @@ def _get_reid_model():
             device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
             print(f"[reid] Loading OSNet-ain-x1.0 on {device}")
 
+            wp = next((p for p in _candidate_weight_paths() if os.path.exists(p)), None)
             model = torchreid.models.build_model(
-                name="osnet_ain_x1_0", num_classes=4101, pretrained=False)
+                name="osnet_ain_x1_0", num_classes=4101,
+                pretrained=(wp is None))
 
-            wp = os.path.join(os.path.dirname(__file__), '..', '..',
-                              'reid_weights',
-                              'osnet_ain_x1_0_msmt17_256x128_amsgrad_ep50_lr0.0015_coslr_b64_fb10_softmax_labsmth_flip_jitter.pth')
-            if os.path.exists(wp):
+            if wp is not None:
                 state = torch.load(wp, map_location=device)
+                if isinstance(state, dict) and "state_dict" in state:
+                    state = state["state_dict"]
                 new_state = {k.replace("module.", "", 1): v for k, v in state.items()}
                 new_state = {k: v for k, v in new_state.items() if not k.startswith("classifier.")}
                 result = model.load_state_dict(new_state, strict=False)
                 print(f"[reid] Weights: {wp}")
                 print(f"[reid] missing={len(result.missing_keys)}, unexpected={len(result.unexpected_keys)}")
             else:
-                print(f"[reid] WARNING: no weights ({wp})")
+                print("[reid] No local weights; using torchreid pretrained OSNet")
 
             model.eval().to(device)
 
@@ -546,7 +567,7 @@ class GlobalReIDManager:
             # Всё ещё tentative — возвращаем None.
             return None
 
-    def end_frame(self, cam, active_lids):
+    def end_frame(self, cam, active_lids, advance_frame=None):
         """
         Вызывается после всех assign() для камеры в этом кадре.
 
@@ -554,10 +575,12 @@ class GlobalReIDManager:
            confirmed_id — confirmed track переходит в DORMANT (если ни один
            другой tentative его не "держит").
         2. Возможно запускаем GC старых DORMANT tracks.
-        3. Инкрементируем frame counter (но только для cam=0, чтобы он
-           продвигался один раз за итерацию multi-camera цикла).
+        3. Опционально инкрементируем frame counter. В batch.py это делается
+           один раз после всех камер, чтобы clock не зависел от наличия cam=0.
         """
         with self._lk:
+            if advance_frame is None:
+                advance_frame = (cam == 0)
             active_lids = set(active_lids) if active_lids else set()
 
             # Найти все tentative tracks этой камеры которые умерли
@@ -601,10 +624,13 @@ class GlobalReIDManager:
                 self._gc_dormant()
                 self._last_gc_frame = self._frame
 
-            # Frame counter продвигаем только для cam=0, чтобы он
-            # инкрементировался один раз за итерацию multi-camera пайплайна.
-            if cam == 0:
+            if advance_frame:
                 self._frame += 1
+
+    def advance_frame(self):
+        """Продвинуть глобальный frame clock на один batch iteration."""
+        with self._lk:
+            self._frame += 1
 
     @property
     def total_unique(self):
@@ -633,10 +659,14 @@ class GlobalReIDManager:
             self._cid_seq = 0
             self._frame = 0
             self._last_gc_frame = 0
+            self._sticky_map.clear()
             self._n_promotions = 0
             self._n_revivals = 0
             self._n_new_confirmed = 0
             self._n_total_confirmed_ever = 0
+            self._n_sticky_hits = 0
+            self._n_sticky_misses = 0
+            self._n_bank_intrusions_rejected = 0
 
     def set_homography(self, a, b, H):
         """Сохранён для backward compat. Homography в новой архитектуре

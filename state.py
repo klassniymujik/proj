@@ -76,6 +76,7 @@ def build_aggregate_payload():
     reid_stats = _reid_stats_cache
     rc = reid_stats.get("counters", {})
     global_unique = rc.get("total_unique", 0)
+    global_active = rc.get("confirmed_active")
 
     with _state_lock:
         cam_items = sorted(_camera_states.items(), key=lambda x: x[0])
@@ -112,7 +113,7 @@ def build_aggregate_payload():
 
     agg_stats = {
         "visitor_count": global_unique,
-        "active_tracks": total_active,
+        "active_tracks": global_active if global_active is not None else total_active,
         "reid": {
             "homography_matches": rc.get("homography_matches", 0),
             "same_camera_reentries": rc.get("same_camera_reentries", 0),
