@@ -53,13 +53,16 @@ _frontend_candidates = [
 _frontend_dir = next(
     (p for p in _frontend_candidates
      if os.path.isdir(p) and os.path.exists(os.path.join(p, "video.html"))),
-    _here,
+    None,
 )
 
-try:
-    app.mount("/", StaticFiles(directory=_frontend_dir), name="frontend")
-except Exception as e:
-    print(f"[warn] StaticFiles: {e}")
+if _frontend_dir is not None:
+    try:
+        app.mount("/", StaticFiles(directory=_frontend_dir), name="frontend")
+    except Exception as e:
+        print(f"[warn] StaticFiles: {e}")
+else:
+    print("[warn] StaticFiles: frontend directory not found")
 
 _batch_stop = threading.Event()
 _batch_thread: threading.Thread | None = None
