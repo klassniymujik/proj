@@ -44,9 +44,17 @@ def root():
         pass
     return RedirectResponse(url="/editor.html")
 
-_frontend_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend")
-if not os.path.isdir(_frontend_dir):
-    _frontend_dir = "frontend"
+_here = os.path.dirname(os.path.abspath(__file__))
+_frontend_candidates = [
+    os.path.join(os.path.dirname(_here), "frontend"),
+    os.path.join(_here, "frontend"),
+    _here,
+]
+_frontend_dir = next(
+    (p for p in _frontend_candidates
+     if os.path.isdir(p) and os.path.exists(os.path.join(p, "video.html"))),
+    _here,
+)
 
 try:
     app.mount("/", StaticFiles(directory=_frontend_dir), name="frontend")
