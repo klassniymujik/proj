@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RetailVision — Аналитика</title>
+  <link rel="stylesheet" href="style.css"/>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet"/>
+</head>
+<body>
+
+<nav id="topnav">
+  <div id="logo"><span class="logo-icon">▦</span><span class="logo-text">RetailVision</span></div>
+  <div id="nav-tabs">
+    <a href="editor.html" class="nav-tab">Редактор</a>
+    <a href="video.html"  class="nav-tab">Видео</a>
+    <a href="analytics.html" class="nav-tab active">Аналитика</a>
+  </div>
+  <div id="status-bar">
+    <span class="status-dot" id="ws-dot"></span>
+    <span id="ws-label">Нет соединения</span>
+  </div>
+</nav>
+
+<div id="analytics-layout">
+
+  <!-- Left: heatmap on floor plan -->
+  <div id="analytics-main">
+    <div class="section-title" style="padding:12px 16px 4px">Тепловая карта</div>
+    <div id="heatmap-wrap">
+      <canvas id="heatmap-canvas"></canvas>
+    </div>
+    <div id="heatmap-legend">
+      <span class="hint">Низкая</span>
+      <div id="legend-bar"></div>
+      <span class="hint">Высокая</span>
+    </div>
+    <div style="padding:8px 16px; display:flex; gap:8px">
+      <button class="btn-secondary" id="btn-hm-reset">Сбросить карту</button>
+      <button class="btn-secondary" id="btn-hm-export" data-offline-ok="true">Экспорт CSV</button>
+    </div>
+  </div>
+
+  <!-- Right: stats and history -->
+  <aside id="analytics-sidebar">
+
+    <section class="panel-section">
+      <div class="section-title">Статистика</div>
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="a-total">—</div>
+          <div class="stat-label">Посетителей</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="a-active">—</div>
+          <div class="stat-label">Сейчас</div>
+        </div>
+      </div>
+      <button class="btn-secondary" id="btn-reset-stats">Сбросить счётчик</button>
+    </section>
+
+    <section class="panel-section">
+      <div class="section-title">История посещаемости</div>
+      <canvas id="history-canvas" width="230" height="110"></canvas>
+      <div class="hint" id="history-hint">Загрузка...</div>
+    </section>
+
+    <section class="panel-section">
+      <div class="section-title">Зоны активности</div>
+      <div id="zones-list"><div class="hint">Данных пока нет</div></div>
+    </section>
+
+    <section class="panel-section">
+      <div class="section-title">Калибровка наложения</div>
+
+      <!-- Выбор камеры: список кнопок (без "Общей") -->
+      <div class="hint" style="margin-bottom:6px">Камера</div>
+      <div id="calib-camera-list">
+        <div class="hint">Ожидание данных...</div>
+      </div>
+
+      <div class="field-row"><label>Смещение X</label><input type="range" id="calib-tx" min="-10" max="10" step="0.1" value="0"></div>
+      <div class="field-row"><label>Смещение Y</label><input type="range" id="calib-tz" min="-10" max="10" step="0.1" value="0"></div>
+      <div class="field-row"><label>Поворот °</label><input type="range" id="calib-rot" min="-180" max="180" step="1" value="0"></div>
+      <div class="field-row"><label>Масштаб X</label><input type="range" id="calib-sx" min="0.1" max="2.0" step="0.01" value="1"></div>
+      <div class="field-row"><label>Масштаб Y</label><input type="range" id="calib-sz" min="0.1" max="2.0" step="0.01" value="1"></div>
+      <button class="btn-secondary" id="calib-reset">Сбросить калибровку</button>
+    </section>
+
+  </aside>
+</div>
+
+<div id="footer">
+  <span id="footer-mode">АНАЛИТИКА</span>
+  <span id="footer-coords"></span>
+  <span></span>
+  <span id="footer-fps"></span>
+</div>
+
+<div id="offline-banner" style="display:none;position:fixed;top:var(--nav-h);left:50%;transform:translateX(-50%);z-index:200;background:#ff6b35;color:#000;font-family:var(--font);font-size:11px;padding:5px 16px;border-radius:0 0 6px 6px;letter-spacing:.05em;pointer-events:none">
+  ⚡ Сервер недоступен — режим просмотра
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="analytics.js"></script>
+<script src="offline.js"></script>
+</body>
+</html>

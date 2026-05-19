@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RetailVision — Редактор</title>
+  <link rel="stylesheet" href="style.css"/>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet"/>
+</head>
+<body>
+
+<nav id="topnav">
+  <div id="logo"><span class="logo-icon">▦</span><span class="logo-text">RetailVision</span></div>
+  <div id="nav-tabs">
+    <a href="editor.html" class="nav-tab active">Редактор</a>
+    <a href="video.html"  class="nav-tab">Видео</a>
+    <a href="analytics.html" class="nav-tab">Аналитика</a>
+  </div>
+  <div id="status-bar">
+    <span class="status-dot" id="ws-dot"></span>
+    <span id="ws-label">Нет соединения</span>
+  </div>
+</nav>
+
+<div id="editor-layout">
+
+  <aside id="panel-left">
+    <section class="panel-section">
+      <div class="section-title">Добавить</div>
+      <button class="add-btn" id="add-wall-obj">Стена</button>
+      <button class="add-btn add-btn-disabled" id="add-door" disabled title="Выберите стену для размещения двери">Дверь</button>
+      <button class="add-btn" id="add-counter">Прилавок</button>
+      <button class="add-btn" id="add-shelf">Стеллаж</button>
+      <button class="add-btn" id="add-camera">Камера</button>
+    </section>
+
+    <section class="panel-section">
+      <div class="section-title">Управление</div>
+      <div class="hint">ЛКМ — выбрать<br>Drag — переместить<br>Стрелки гизмо — точное движение<br>ПКМ — вращение вида<br>Delete — удалить выбранный<br>Ctrl+Z / Ctrl+Y — undo/redo</div>
+    </section>
+
+    <section class="panel-section">
+      <div class="section-title">Сцена</div>
+      <button class="btn-secondary" id="btn-reset-view" data-offline-ok="true">Сбросить вид</button>
+      <button class="btn-secondary" id="btn-load">Загрузить</button>
+      <button class="btn-primary"   id="btn-save">Сохранить</button>
+    </section>
+
+    <section class="panel-section">
+      <div class="section-title">Пресеты</div>
+      <div class="field-row">
+        <select id="preset-select" style="width:100%;font-family:var(--font);font-size:11px;padding:4px;background:#1a1a1e;color:#e5e5e3;border:1px solid #333;border-radius:4px">
+          <option value="">-- выберите --</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <input type="text" id="preset-name" placeholder="Имя пресета" style="width:70%;font-size:11px"/>
+        <button class="btn-secondary" id="btn-preset-save" style="font-size:10px;padding:3px 8px">Сохр.</button>
+      </div>
+      <div class="field-row" style="justify-content:flex-start;gap:4px">
+        <button class="btn-secondary" id="btn-preset-load" style="font-size:10px;padding:3px 8px">Загрузить</button>
+        <button class="btn-secondary" id="btn-preset-del" style="font-size:10px;padding:3px 8px;color:#ff5050">Удалить</button>
+        <button class="btn-secondary" id="btn-preset-export" style="font-size:10px;padding:3px 8px">Экспорт</button>
+        <button class="btn-secondary" id="btn-preset-import" style="font-size:10px;padding:3px 8px">Импорт</button>
+      </div>
+      <input type="file" id="preset-import-file" accept=".json" style="display:none"/>
+    </section>
+  </aside>
+
+  <canvas id="scene"></canvas>
+
+  <aside id="panel-right">
+    <div id="props-empty">
+      <div class="section-title">Свойства</div>
+      <div class="hint">Выберите объект на сцене</div>
+    </div>
+
+    <div id="props-camera" style="display:none">
+      <div class="section-title">Камера</div>
+      <div class="field-row"><label>Метка</label><input type="text" id="p-cam-label" style="width:90px"/></div>
+      <div class="field-row"><label>Адрес</label><input type="text" id="p-cam-address" placeholder="rtsp://… или file.mp4" style="width:90px" title="RTSP-поток или путь к видеофайлу"/></div>
+      <div class="field-row"><label>Высота (м)</label><input type="number" id="p-cam-h" value="3" min="1" max="10" step="0.5"/></div>
+      <div class="field-row"><label>Поворот °</label><input type="number" id="p-cam-yaw" value="0" min="-180" max="180" step="5"/></div>
+      <div class="field-row"><label>Наклон вниз °</label><input type="number" id="p-cam-pitch" value="60" min="10" max="89" step="5"/></div>
+      <div class="field-row"><label>Угол обзора °</label><input type="number" id="p-cam-fov" value="90" min="30" max="150" step="5"/></div>
+      <button class="btn-danger" id="p-cam-del">Удалить</button>
+    </div>
+
+    <div id="props-shelf" style="display:none">
+      <div class="section-title">Стеллаж</div>
+      <div class="field-row"><label>Метка</label><input type="text" id="p-shelf-label" style="width:90px"/></div>
+      <div class="field-row"><label>Ширина (м)</label><input type="number" id="p-shelf-w" value="1.5" min="0.5" max="10" step="0.1"/></div>
+      <div class="field-row"><label>Глубина (м)</label><input type="number" id="p-shelf-d" value="0.5" min="0.2" max="5" step="0.1"/></div>
+      <div class="field-row"><label>Высота (м)</label><input type="number" id="p-shelf-h" value="2" min="0.5" max="5" step="0.1"/></div>
+      <div class="field-row"><label>Поворот °</label><input type="number" id="p-shelf-rot" value="0" min="-180" max="180" step="15"/></div>
+      <button class="btn-secondary" id="p-shelf-dup">Дублировать</button>
+      <button class="btn-danger" id="p-shelf-del">Удалить</button>
+    </div>
+
+    <div id="props-counter" style="display:none">
+      <div class="section-title">Прилавок</div>
+      <div class="field-row"><label>Метка</label><input type="text" id="p-counter-label" style="width:90px"/></div>
+      <div class="field-row"><label>Ширина (м)</label><input type="number" id="p-counter-w" value="2" min="0.5" max="10" step="0.1"/></div>
+      <div class="field-row"><label>Глубина (м)</label><input type="number" id="p-counter-d" value="0.8" min="0.2" max="5" step="0.1"/></div>
+      <div class="field-row"><label>Высота (м)</label><input type="number" id="p-counter-h" value="1" min="0.3" max="3" step="0.1"/></div>
+      <div class="field-row"><label>Поворот °</label><input type="number" id="p-counter-rot" value="0" min="-180" max="180" step="15"/></div>
+      <button class="btn-secondary" id="p-counter-dup">Дублировать</button>
+      <button class="btn-danger" id="p-counter-del">Удалить</button>
+    </div>
+
+    <div id="props-door" style="display:none">
+      <div class="section-title">Дверь</div>
+      <div class="field-row"><label>Метка</label><input type="text" id="p-door-label" style="width:90px"/></div>
+      <div class="field-row"><label>Ширина (м)</label><input type="number" id="p-door-w" value="1" min="0.5" max="4" step="0.1"/></div>
+      <div class="btn-danger" id="p-door-del" style="display:block;width:100%;padding:7px;border-radius:6px;background:rgba(255,80,80,.1);color:#ff5050;border:1px solid rgba(255,80,80,.3);font-family:var(--font);font-size:11px;cursor:pointer;margin-top:7px;text-align:center">Удалить</div>
+    </div>
+
+    <div id="props-wall-obj" style="display:none">
+      <div class="section-title">Стена</div>
+      <div class="field-row"><label>Метка</label><input type="text" id="p-wobj-label" style="width:90px"/></div>
+      <div class="field-row"><label>Длина (м)</label><input type="number" id="p-wobj-len" value="4" min="0.5" max="50" step="0.5"/></div>
+      <div class="field-row"><label>Поворот °</label><input type="number" id="p-wobj-rot" value="0" min="-180" max="180" step="5"/></div>
+      <div class="field-row"><label>Высота (м)</label><input type="number" id="p-wobj-h" value="3" min="0.5" max="20" step="0.5"/></div>
+      <div class="hint">Выбрана стена — можно добавить дверь кнопкой слева</div>
+      <button class="btn-secondary" id="p-wobj-dup">Дублировать</button>
+      <button class="btn-danger" id="p-wobj-del">Удалить</button>
+    </div>
+  </aside>
+
+</div>
+
+<div id="footer">
+  <span id="footer-mode">РЕДАКТОР</span>
+  <span id="footer-coords"></span>
+  <span id="footer-fps"></span>
+  <span id="footer-info"></span>
+</div>
+
+<div id="offline-banner" style="display:none;position:fixed;top:var(--nav-h);left:50%;transform:translateX(-50%);z-index:200;background:#ff6b35;color:#000;font-family:var(--font);font-size:11px;padding:5px 16px;border-radius:0 0 6px 6px;letter-spacing:.05em;pointer-events:none">
+  ⚡ Сервер недоступен — режим просмотра
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="editor.js"></script>
+<script src="offline.js"></script>
+</body>
+</html>

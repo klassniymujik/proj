@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RetailVision — Видео</title>
+  <link rel="stylesheet" href="style.css"/>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet"/>
+</head>
+<body>
+
+<nav id="topnav">
+  <div id="logo"><span class="logo-icon">▦</span><span class="logo-text">RetailVision</span></div>
+  <div id="nav-tabs">
+    <a href="editor.html" class="nav-tab">Редактор</a>
+    <a href="video.html"  class="nav-tab active">Видео</a>
+    <a href="analytics.html" class="nav-tab">Аналитика</a>
+  </div>
+  <div id="status-bar">
+    <span class="status-dot" id="ws-dot"></span>
+    <span id="ws-label">Нет соединения</span>
+  </div>
+</nav>
+
+<div id="video-layout">
+
+  <aside id="video-sidebar">
+
+    <section class="panel-section">
+      <div class="section-title">Камеры</div>
+      <button class="btn-secondary" id="btn-load-cameras" style="margin-bottom:8px">↓ Загрузить из БД</button>
+      <div id="camera-list"><div class="hint">Нажмите «Загрузить из БД»</div></div>
+    </section>
+
+    <section class="panel-section">
+      <div class="section-title">Источник</div>
+      <input type="text" id="video-source" value="video.mp4" style="width:100%;margin-bottom:6px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-family:var(--font);font-size:11px;padding:5px 8px;outline:none" placeholder="Адрес или путь к файлу"/>
+      <div style="display:flex;gap:6px">
+        <button class="btn-primary"   id="btn-play"  style="flex:1;margin-top:0">Старт</button>
+        <button class="btn-secondary" id="btn-pause" style="flex:1;margin-top:0" data-offline-ok="true">Пауза</button>
+      </div>
+      <button class="btn-secondary" id="btn-source-apply" style="margin-top:6px">Применить источник</button>
+      <button class="btn-secondary" id="btn-calib" style="margin-top:6px;width:100%">Калибровка камер</button>
+    </section>
+
+    <section class="panel-section">
+      <div class="section-title">Статистика</div>
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="v-active">—</div>
+          <div class="stat-label">В кадре</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="v-total">—</div>
+          <div class="stat-label">Всего</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel-section">
+      <div class="section-title">Детектор</div>
+      <div class="field-row"><label>Модель</label><span class="value-text">YOLOv8n</span></div>
+      <div class="field-row"><label>Трекер</label><span class="value-text">ByteTrack</span></div>
+      <div class="field-row"><label>FPS потока</label><span class="value-text" id="v-fps">—</span></div>
+      <div class="field-row"><label>Задержка</label><span class="value-text" id="v-latency">—</span></div>
+    </section>
+
+    <section class="panel-section" id="calib-panel" style="display:none">
+      <div class="section-title">Калибровка камер</div>
+      <div class="field-row" style="margin-bottom:6px">
+        <label style="font-size:10px">Пара камер</label>
+        <select id="calib-pair-select" style="flex:1;font-size:10px;padding:2px 4px;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:4px"></select>
+      </div>
+      <div id="calib-hint" style="font-size:10px;color:var(--text2);margin:0 0 8px;line-height:1.4"></div>
+      <div style="display:flex;gap:4px;margin-bottom:4px">
+        <button class="btn-secondary" id="btn-calib-undo" style="flex:1">↩ Назад</button>
+        <button class="btn-secondary" id="btn-calib-clear" style="flex:1">Сброс</button>
+      </div>
+      <button class="btn-primary" id="btn-calib-submit" style="width:100%">Сохранить</button>
+    </section>
+
+    <section class="panel-section">
+      <div class="section-title">Активные треки</div>
+      <div id="track-list"></div>
+    </section>
+
+  </aside>
+
+  <div id="video-main">
+    <div id="video-wrap">
+      <div id="video-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px;padding:10px;width:100%;height:100%;overflow:auto"></div>
+      <div id="video-overlay-label">Нажмите Старт или ожидайте соединения...</div>
+    </div>
+  </div>
+
+</div>
+
+<div id="footer">
+  <span id="footer-mode">ВИДЕОПОТОК</span>
+  <span id="footer-coords"></span>
+  <span></span>
+  <span id="footer-fps"></span>
+</div>
+
+<div id="offline-banner" style="display:none;position:fixed;top:var(--nav-h);left:50%;transform:translateX(-50%);z-index:200;background:#ff6b35;color:#000;font-family:var(--font);font-size:11px;padding:5px 16px;border-radius:0 0 6px 6px;letter-spacing:.05em;pointer-events:none">
+  ⚡ Сервер недоступен — режим просмотра
+</div>
+
+<script src="video.js"></script>
+<script src="offline.js"></script>
+</body>
+</html>
