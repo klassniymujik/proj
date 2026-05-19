@@ -13,7 +13,7 @@ class Camera:
     width, height: разрешение изображения
     """
 
-    def __init__(self, position, yaw=0.0, pitch=-60.0,
+    def __init__(self, position, yaw=0.0, pitch=-150.0,
                  fov_h=90.0, width=1280, height=720):
         self.position = np.array(position, dtype=float)
         self.yaw = yaw
@@ -125,7 +125,7 @@ def create_mapper_from_config(cam_config: dict) -> SpatialMapper:
       x, y       — положение на полу (z задаётся через height)
       height     — высота установки камеры (default 3.0)
       yaw        — поворот по горизонтали в градусах (default 0)
-      pitch      — наклон вниз в градусах (default -60)
+      pitch      — наклон вниз в градусах (default -150)
       fov        — горизонтальный угол обзора (default 90)
       img_width  — ширина кадра (default 1280)
       img_height — высота кадра (default 720)
@@ -137,7 +137,7 @@ def create_mapper_from_config(cam_config: dict) -> SpatialMapper:
             cam_config.get("height", 3.0)
         ),
         yaw=cam_config.get("yaw", 0.0),
-        pitch=cam_config.get("pitch", -60.0),
+        pitch=cam_config.get("pitch", -150.0),
         fov_h=cam_config.get("fov", 90.0),
         width=cam_config.get("img_width", 1280),
         height=cam_config.get("img_height", 720),

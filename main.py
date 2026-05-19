@@ -79,7 +79,7 @@ def restart_all_video_loops():
     if not cam_cfgs:
         fallback_cam = {
             "x": 10.0, "y": 10.0, "height": 3.0,
-            "yaw": 0.0, "pitch": -60.0, "fov": 90.0,
+            "yaw": 0.0, "pitch": -150.0, "fov": 90.0,
             "img_width": 1280, "img_height": 720,
             "label": "Fallback",
         }
@@ -101,7 +101,7 @@ def restart_video_loop(source: str = "video.mp4"):
         stop_all_video_loops()
         fallback_cam = {
             "x": 10.0, "y": 10.0, "height": 3.0,
-            "yaw": 0.0, "pitch": -60.0, "fov": 90.0,
+            "yaw": 0.0, "pitch": -150.0, "fov": 90.0,
             "img_width": 1280, "img_height": 720,
             "label": "Fallback",
         }

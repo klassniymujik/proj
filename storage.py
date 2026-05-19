@@ -118,7 +118,7 @@ def save_cameras(cameras: list):
             VALUES(1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             cam.get("x", 0), cam.get("y", 0), cam.get("height", 3.0),
-            cam.get("yaw", 0), cam.get("pitch", -60), cam.get("fov", 90),
+            cam.get("yaw", 0), cam.get("pitch", -150), cam.get("fov", 90),
             cam.get("img_width", 1280), cam.get("img_height", 720),
             cam.get("label", ""), cam.get("address", "")
         ))
