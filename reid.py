@@ -119,26 +119,18 @@ def _get_reid_model():
             model.eval().to(device)
 
             _reid_device = device
-            if device.type == "cuda":
-                _reid_half = True
-                model.half()
             _reid_model = model
             _MEAN_T = torch.tensor([0.485, 0.456, 0.406],
                                    device=device).view(1, 3, 1, 1)
             _STD_T = torch.tensor([0.229, 0.224, 0.225],
                                   device=device).view(1, 3, 1, 1)
-            if _reid_half:
-                _MEAN_T = _MEAN_T.half()
-                _STD_T = _STD_T.half()
 
             with torch.no_grad():
                 d = torch.randn(1, 3, _INPUT_H, _INPUT_W, device=device)
-                if _reid_half:
-                    d = d.half()
                 _ = model(d)
             if device.type == "cuda":
                 torch.cuda.synchronize()
-            print(f"[reid] OSNet ready (half={_reid_half})")
+            print(f"[reid] OSNet ready")
         except Exception as e:
             print(f"[reid] ERROR: {e}")
             _reid_model = None
@@ -243,12 +235,11 @@ REID_MIN_CONF = 0.50
 
 # Сколько descriptors нужно tentative track'у накопить, прежде чем
 # мы попытаемся его "промоутить" в ConfirmedTrack. При DESC_INTERVAL=1
-# (descriptor каждый кадр) и 25 fps это даёт ~0.6 секунды "слепой зоны"
+# (descriptor каждый кадр) и 25 fps это даёт ~1.2 секунды "слепой зоны"
 # для каждого нового человека на видео и на heatmap.
 # Увеличить → надёжнее матчинг к dormant, но дольше слепая зона.
 # Уменьшить → быстрее появление, но менее надёжный bank-vs-bank match.
-# С per-query top-1 matching (точнее чем top-K mean) достаточно 15.
-CONFIRMATION_FRAMES = 15
+CONFIRMATION_FRAMES = 30
 
 # Сколько кадров confirmed track может быть в DORMANT состоянии прежде чем
 # его удалим окончательно. При 25 fps: 750 кадров ≈ 30 секунд.
@@ -260,53 +251,75 @@ DORMANT_TTL_FRAMES = 750
 # матчинга, не съедает много памяти (~100KB на confirmed track).
 BANK_MAX_SIZE = 50
 
-# Порог cos distance для bank-vs-bank матчинга при confirmation против
-# [Устаревшие пороги per-query top-1 — заменены на centroid-based matching]
-# См. MATCH_CENTROID_ACTIVE и MATCH_CENTROID_DORMANT ниже.
+# Порог cos distance для bank-vs-bank матчинга. Кандидат принимается
+# только если best_dist < MATCH_BANK_VS_BANK.
+# Используется top-K mean similarity (берём топ-K лучших пар descriptors).
+#
+# Порог УЖЕСТОЧЁН до 0.30 (с 0.40). Логика: при большом числе кандидатов
+# (10-30 confirmed cid'ов) вероятность случайного матча на distance 0.30-0.40
+# слишком высока — это приводит к обменам ID между разными людьми. Лучше
+# создать лишний cid (он со временем сольётся через DORMANT revival если
+# тот же человек реально вернётся) чем "склеить" двух разных людей.
+MATCH_BANK_VS_BANK = 0.30
 
-# Максимальное расстояние (метры) между позициями tentative и ACTIVE
-# confirmed track для разрешения ACTIVE match. Один и тот же человек
-# на разных камерах должен проецироваться в близкие мировые координаты;
-# разные люди — далеко. Это главный барьер против ложных слияний,
-# т.к. OSNet-ain не всегда различает людей визуально.
-SPATIAL_GATE_ACTIVE = 5.0
+# CONFIDENT-уровень: если best_dist < этого порога, матч принимается
+# БЕЗ gap check. Логика: distance 0.15 это очень уверенный матч сам по
+# себе (sim 0.85+), не имеет значения что рядом могут быть другие
+# кандидаты с близкими distances — мы матчим лучшего.
+#
+# Это критично для сцен с несколькими похожими людьми (одинаковая одежда,
+# общая обстановка): их descriptors close together, gap может быть малым,
+# но best_dist всё равно clearly разный (типа 0.07 vs 0.10).
+#
+# Без этого мы попадаем в зону "все близко, ни один не выбран" и
+# плодим cid каждый раз когда tentative промоутится.
+MATCH_CONFIDENT = 0.15
 
-# Grace period: сколько кадров confirmed track может быть без живого
-# tentative прежде чем перейдёт в DORMANT. Без этого ByteTrack теряет
-# трек на 1–2 кадра → immediate DORMANT → при повторном обнаружении
-# новый tentative → новая промоция → шанс ошибки. Grace period
-# уменьшает частоту ACTIVE↔DORMANT циклов.
-DORMANT_GRACE_FRAMES = 30
+# Минимальная разница между лучшим и вторым кандидатом для принятия
+# revival/merge КОГДА best_dist в зоне неопределённости (0.15-0.40).
+# Защита от random matching когда несколько кандидатов одинаково плохие.
+MATCH_GAP = 0.08
 
-# Порог косинусного расстояния нового дескриптора до центроида банка.
-# Если dist > порога — дескриптор не добавляется (защита от загрязнения банка
-# при ложном слиянии). OSNet same-person ≈ 0.03–0.18, different ≈ 0.10–0.30+.
-BANK_PURITY_THRESHOLD = 0.25
+# Top-K — сколько лучших similarity pairs использовать для усреднения.
+MATCH_TOP_K = 20
 
-# ── Centroid-based matching (первичная метрика) ──────────────────────────────
-# Косинусное расстояние между центроидом tentative и центроидом candidate
-# используется как ОСНОВНАЯ метрика вместо per-query top-1 mean.
-# Centroid стабильнее: same-person ≈ 0.02–0.15, different ≈ 0.20–0.50+.
-# Per-query top-1 был обманчиво мягким (2–3/15 случайных совпадений → 0.05–0.15
-# для разных людей).
-MATCH_CENTROID_ACTIVE = 0.18
-MATCH_CENTROID_DORMANT = 0.28
+# ── Bank protection (защита от загрязнения descriptors после ID swap) ────────
+#
+# Когда ByteTrack swap'нул двух людей, наш confirmed track продолжает
+# получать descriptors но уже **другого** человека. Без защиты bank
+# постепенно загрязняется и последующие матчи становятся ненадёжными.
+#
+# Hysteresis: перед добавлением descriptor в bank confirmed track,
+# проверяем max cosine similarity с уже существующими в bank.
+# Если sim < BANK_INTRUSION_SIM — descriptor совсем не похож на bank'а
+# хозяина → подозрительно (вероятно swap). НЕ добавляем.
+#
+# Порог 0.5 (= distance 0.5) консервативный: реальные descriptors одного
+# человека дают max sim 0.85+ против своего bank, разные люди обычно
+# < 0.40. Зазор 0.5 безопасный.
+BANK_INTRUSION_SIM = 0.50
 
-# Максимальное пространственное расстояние (метры) для ACTIVE merge.
-# Жёсткий gate: один и тот же человек не может "телепортировать".
-SPATIAL_GATE_ACTIVE_MERGE = 2.0
-
-# Максимальное пространственное расстояние (метры) для DORMANT revive.
-# Чуть мягче чем ACTIVE (2.0m) — человек мог отойти и вернуться,
-# но 2.5m всё ещё физически разумно. Блокирует "телепортацию".
-SPATIAL_GATE_DORMANT_MERGE = 2.5
-
-# Сколько кадров после последнего наблюдения CID на своей камере мы считаем
-# его "присутствующим" и запрещаем ACTIVE cross-camera match. При 25 fps
-# 10 кадров = 0.4 сек — защищает от ложного слияния при кратковременной
-# потере трека ByteTrack'ом (1–2 кадра). Если CID реально присутствует на
-# камере A, cross-camera match с камеры B почти наверняка ложный.
-ACTIVE_PRESENCE_GRACE_FRAMES = 10
+# ── Soft sticky (cam, lid) → cid memory ───────────────────────────────────────
+#
+# ByteTrack часто теряет local_id и сразу же пересоздаёт его с тем же
+# значением для того же физического человека (классический сценарий
+# occlusion). Без sticky наша система начинает заново матчинг этого
+# tentative, и может ассоциировать его с другим cid (особенно когда
+# в комнате есть люди в похожей одежде).
+#
+# Sticky запоминает (cam, lid) → cid с timestamp на STICKY_TTL_FRAMES.
+# Когда тот же (cam, lid) появляется снова в окне TTL — мы помечаем
+# tentative как "кандидат на sticky-revival" и ВЕРИФИЦИРУЕМ через ReID:
+# когда накопится STICKY_VERIFY_FRAMES descriptors, сравниваем с bank
+# старого cid, и если distance < STICKY_THRESHOLD — ассоциируем.
+# Иначе отпускаем sticky (это другой человек после ID swap).
+#
+# Эта мягкая стратегия защищает от обоих сценариев:
+# - ByteTrack пересоздал тот же lid для того же человека → sticky cid
+# - ByteTrack swap'нул двух людей → ReID видит другие descriptors → отпуск
+STICKY_TTL_FRAMES = 100  # ~4 сек @ 25fps; для коротких потерь lid'а
+STICKY_VERIFY_FRAMES = 5  # сколько descriptors накопить перед верификацией
+STICKY_THRESHOLD = 0.20  # max distance чтобы считать sticky подтверждённым
 
 # Включить debug-логирование решений в _promote_tentative.
 DEBUG_PROMOTION = True
@@ -333,7 +346,8 @@ class TentativeTrack:
     """Live (cam, local_id) тандем. Накапливает descriptors пока ByteTrack
     отдаёт этот local_id. Имеет confirmed_id когда его "промоутили"."""
     __slots__ = ("cam", "lid", "birth_frame", "last_frame",
-                 "descs", "last_wx", "last_wy", "confirmed_id")
+                 "descs", "last_wx", "last_wy", "confirmed_id",
+                 "sticky_candidate_cid", "sticky_resolved")
 
     def __init__(self, cam, lid, frame):
         self.cam = cam
@@ -346,82 +360,72 @@ class TentativeTrack:
         self.last_wx = 0.0
         self.last_wy = 0.0
         self.confirmed_id = None  # None пока не созрел
+        # Sticky verification: если sticky_map содержал запись для (cam, lid),
+        # храним cid сюда. После STICKY_VERIFY_FRAMES descriptors верифицируем
+        # через ReID. После одной попытки (успех или провал) sticky_resolved
+        # становится True и больше не пробуем.
+        self.sticky_candidate_cid = None
+        self.sticky_resolved = False
 
 
 class ConfirmedTrack:
     """Уникальный человек. Один confirmed_id на одного человека на всю сессию.
     Никогда не меняет ID после создания."""
-    __slots__ = ("cid", "status", "bank", "centroid", "dormant_since_frame",
-                 "pending_dormant_since_frame",
+    __slots__ = ("cid", "status", "bank", "dormant_since_frame",
                  "last_wx", "last_wy", "last_seen_frame")
 
     def __init__(self, cid, descs, wx, wy, frame):
         self.cid = cid
         self.status = STATUS_ACTIVE
+        # Bank — компактный список L2-norm descriptors. Когда переполняется,
+        # выкидываем старые (FIFO).
         self.bank = list(descs[-BANK_MAX_SIZE:])
-        if self.bank:
-            stacked = np.stack([_norm(d) for d in self.bank]).astype(np.float32)
-            self.centroid = stacked.mean(axis=0)
-            n = float(np.linalg.norm(self.centroid))
-            self.centroid = self.centroid / n if n > 0 else self.centroid
-        else:
-            self.centroid = None
         self.dormant_since_frame = None
-        self.pending_dormant_since_frame = None
         self.last_wx = wx
         self.last_wy = wy
         self.last_seen_frame = frame
 
     def add_descs(self, descs, wx, wy, frame):
-        """Добавить descriptors в банк с purity gate. Возвращает (n_added, n_rejected, max_reject_dist)."""
-        n_added = 0
-        n_rejected = 0
-        max_reject_dist = 0.0
+        """Добавить descriptors из tentative track в банк. Применяет
+        проверку BANK_INTRUSION_SIM: descriptor добавляется только если
+        он достаточно похож хотя бы на один из существующих в bank
+        (защита от загрязнения после ID swap)."""
+        rejected = 0
         for d in descs:
-            d_norm = _norm(d)
-            if self.centroid is not None and len(self.bank) >= 3:
-                cos_dist = 1.0 - float(np.dot(d_norm, self.centroid))
-                if cos_dist > BANK_PURITY_THRESHOLD:
-                    n_rejected += 1
-                    if cos_dist > max_reject_dist:
-                        max_reject_dist = cos_dist
+            if len(self.bank) > 0:
+                # Считаем max cosine similarity descriptor против bank
+                d_arr = np.asarray(d, dtype=np.float32)
+                d_norm = max(float(np.linalg.norm(d_arr)), 1e-9)
+                d_arr = d_arr / d_norm
+                bank_arr = np.stack(self.bank).astype(np.float32)
+                bank_norms = np.maximum(
+                    np.linalg.norm(bank_arr, axis=1, keepdims=True), 1e-9
+                )
+                bank_arr = bank_arr / bank_norms
+                max_sim = float((bank_arr @ d_arr).max())
+                if max_sim < BANK_INTRUSION_SIM:
+                    # Descriptor подозрительно непохож на свой bank.
+                    # Возможно ByteTrack swap'нул людей, descriptor
+                    # принадлежит другому. Не добавляем.
+                    rejected += 1
                     continue
             self.bank.append(d)
-            n_added += 1
-            if self.centroid is not None:
-                old_n = len(self.bank) - 1
-                new_n = len(self.bank)
-                self.centroid = (self.centroid * old_n + d_norm) / new_n
-                cn = float(np.linalg.norm(self.centroid))
-                self.centroid = self.centroid / cn if cn > 0 else self.centroid
-            else:
-                self.centroid = d_norm.copy()
         if len(self.bank) > BANK_MAX_SIZE:
+            # Выкидываем самые старые
             del self.bank[:len(self.bank) - BANK_MAX_SIZE]
-            self._recompute_centroid()
         self.last_wx = wx
         self.last_wy = wy
         self.last_seen_frame = frame
-        return n_added, n_rejected, max_reject_dist
-
-    def _recompute_centroid(self):
-        if not self.bank:
-            self.centroid = None
-            return
-        stacked = np.stack([_norm(d) for d in self.bank]).astype(np.float32)
-        self.centroid = stacked.mean(axis=0)
-        n = float(np.linalg.norm(self.centroid))
-        self.centroid = self.centroid / n if n > 0 else self.centroid
+        # Возвращаем сколько отклонили — для логирования/диагностики
+        return rejected
 
     def go_dormant(self, frame):
         self.status = STATUS_DORMANT
         self.dormant_since_frame = frame
-        self.pending_dormant_since_frame = None
 
     def revive(self, frame):
         self.status = STATUS_ACTIVE
         self.dormant_since_frame = None
-        self.pending_dormant_since_frame = None
         self.last_seen_frame = frame
 
 
@@ -446,17 +450,19 @@ class GlobalReIDManager:
         self._frame = 0           # глобальный frame counter
         self._last_gc_frame = 0
 
+        # Sticky memory: (cam, lid) → (cid, frame_when_lost)
+        # Используется когда ByteTrack пересоздаёт тот же lid для того же
+        # физического человека. См. STICKY_TTL_FRAMES и _try_sticky_verify.
+        self._sticky_map = {}
+
         # Счётчики для метрик
         self._n_promotions = 0           # сколько tentative → confirmed
         self._n_revivals = 0             # сколько раз matched к DORMANT
         self._n_new_confirmed = 0        # сколько раз создали новый cid
         self._n_total_confirmed_ever = 0 # = visitor_count
-
-        self._purity_rej_per_frame = 0
-        self._purity_rej_merge = 0
-        self._purity_max_dist = 0.0
-        self._purity_summary_interval = 100
-        self._last_purity_frame = 0
+        self._n_sticky_hits = 0          # сколько раз sticky подтвердился
+        self._n_sticky_misses = 0        # сколько раз sticky отвергнут ReID
+        self._n_bank_intrusions_rejected = 0  # отклонённые descriptors
 
     # ────────────────────────────────────────────────────────────────────────
     # Публичный API (то что batch.py / main.py вызывают)
@@ -477,6 +483,20 @@ class GlobalReIDManager:
             if tent is None:
                 tent = TentativeTrack(cam, lid, self._frame)
                 self._tentative[key] = tent
+                # Проверяем sticky_map: был ли у этой (cam, lid) пары
+                # cid в недавнем прошлом?
+                sticky_entry = self._sticky_map.get(key)
+                if sticky_entry is not None:
+                    sticky_cid, frame_when_lost = sticky_entry
+                    age = self._frame - frame_when_lost
+                    if age < STICKY_TTL_FRAMES:
+                        # Только если этот cid всё ещё существует
+                        # (не был полностью удалён по DORMANT_TTL)
+                        if sticky_cid in self._confirmed:
+                            tent.sticky_candidate_cid = sticky_cid
+                    # Удаляем запись либо потому что используем, либо
+                    # потому что устарела
+                    self._sticky_map.pop(key, None)
 
             tent.last_frame = self._frame
             tent.last_wx = float(wx) if wx is not None else 0.0
@@ -495,21 +515,30 @@ class GlobalReIDManager:
                 ct = self._confirmed.get(cid)
                 if ct is not None:
                     if desc is not None and confidence >= REID_MIN_CONF:
-                        n_add, n_rej, max_rd = ct.add_descs(
-                            [desc], tent.last_wx, tent.last_wy, self._frame)
-                        if n_rej > 0:
-                            self._purity_rej_per_frame += n_rej
-                            self._purity_max_dist = max(
-                                self._purity_max_dist, max_rd)
+                        rejected = ct.add_descs([desc], tent.last_wx,
+                                                tent.last_wy, self._frame)
+                        self._n_bank_intrusions_rejected += rejected
                     else:
+                        # Без descriptor — только обновляем "last seen"
                         ct.last_wx = tent.last_wx
                         ct.last_wy = tent.last_wy
                         ct.last_seen_frame = self._frame
-                    if ct.pending_dormant_since_frame is not None:
-                        ct.pending_dormant_since_frame = None
                 return cid
 
-            # Не confirmed. Проверяем готов ли промоутить.
+            # Не confirmed. Если есть sticky-кандидат — пробуем верифицировать.
+            # После STICKY_VERIFY_FRAMES descriptors сравниваем bank tentative
+            # с bank старого cid; если distance < STICKY_THRESHOLD —
+            # подтверждаем sticky. Иначе отпускаем sticky и идём обычным
+            # путём.
+            if (tent.sticky_candidate_cid is not None
+                    and not tent.sticky_resolved
+                    and len(tent.descs) >= STICKY_VERIFY_FRAMES):
+                sticky_cid = self._try_sticky_verify(tent)
+                if sticky_cid is not None:
+                    return sticky_cid
+                # sticky_resolved уже True после _try_sticky_verify
+
+            # Проверяем готов ли обычный promote.
             if len(tent.descs) >= CONFIRMATION_FRAMES:
                 cid = self._promote_tentative(tent)
                 return cid
@@ -522,12 +551,10 @@ class GlobalReIDManager:
         Вызывается после всех assign() для камеры в этом кадре.
 
         1. Tentative tracks которые не в active_lids — удаляем. Если у них был
-           confirmed_id — помечаем confirmed track как pending_dormant (если
-           ни один другой tentative его не "держит"). После grace period —
-           окончательный переход в DORMANT.
-        2. Проверяем pending_dormant tracks — истёк ли grace period.
-        3. Возможно запускаем GC старых DORMANT tracks.
-        4. Инкрементируем frame counter (но только для cam=0, чтобы он
+           confirmed_id — confirmed track переходит в DORMANT (если ни один
+           другой tentative его не "держит").
+        2. Возможно запускаем GC старых DORMANT tracks.
+        3. Инкрементируем frame counter (но только для cam=0, чтобы он
            продвигался один раз за итерацию multi-camera цикла).
         """
         with self._lk:
@@ -544,32 +571,30 @@ class GlobalReIDManager:
             for key in dead_keys:
                 tent = self._tentative.pop(key)
                 if tent.confirmed_id is None:
+                    # Не дожил до confirmation — просто выбрасываем.
                     continue
+                # Был confirmed. Записываем в sticky_map: если ByteTrack
+                # пересоздаст тот же (cam, lid) в течение STICKY_TTL_FRAMES,
+                # мы попробуем восстановить этот cid (с верификацией ReID).
+                self._sticky_map[key] = (tent.confirmed_id, self._frame)
+                # Проверим — есть ли ещё живые tentative
+                # с тем же confirmed_id? Если нет — переводим в DORMANT.
                 cid = tent.confirmed_id
                 still_active = any(
                     t.confirmed_id == cid for t in self._tentative.values()
                 )
                 if not still_active:
                     ct = self._confirmed.get(cid)
-                    if ct is not None and ct.status == STATUS_ACTIVE:
-                        ct.pending_dormant_since_frame = self._frame
+                    if ct is not None:
+                        ct.go_dormant(self._frame)
 
-            # Проверяем все pending_dormant: если grace period истёк —
-            # переводим в DORMANT. Если снова появился tentative — отменяем.
-            for ct in self._confirmed.values():
-                if ct.status != STATUS_ACTIVE:
-                    continue
-                if ct.pending_dormant_since_frame is None:
-                    continue
-                # Есть ли живой tentative с этим cid?
-                has_tent = any(
-                    t.confirmed_id == ct.cid for t in self._tentative.values()
-                )
-                if has_tent:
-                    ct.pending_dormant_since_frame = None
-                elif (self._frame - ct.pending_dormant_since_frame
-                      >= DORMANT_GRACE_FRAMES):
-                    ct.go_dormant(self._frame)
+            # GC sticky_map: удалить устаревшие записи (старше STICKY_TTL)
+            stale_sticky = [
+                k for k, (_, f) in self._sticky_map.items()
+                if self._frame - f >= STICKY_TTL_FRAMES
+            ]
+            for k in stale_sticky:
+                self._sticky_map.pop(k, None)
 
             # GC по таймеру.
             if self._frame - self._last_gc_frame >= GC_INTERVAL_FRAMES:
@@ -580,20 +605,6 @@ class GlobalReIDManager:
             # инкрементировался один раз за итерацию multi-camera пайплайна.
             if cam == 0:
                 self._frame += 1
-                if (self._frame - self._last_purity_frame
-                        >= self._purity_summary_interval):
-                    total_rej = (self._purity_rej_per_frame
-                                 + self._purity_rej_merge)
-                    if total_rej > 0:
-                        print(f"[bank-purity summary] frames "
-                              f"{self._last_purity_frame}-{self._frame}: "
-                              f"per-frame_rej={self._purity_rej_per_frame} "
-                              f"merge_rej={self._purity_rej_merge} "
-                              f"max_dist={self._purity_max_dist:.3f}")
-                    self._purity_rej_per_frame = 0
-                    self._purity_rej_merge = 0
-                    self._purity_max_dist = 0.0
-                    self._last_purity_frame = self._frame
 
     @property
     def total_unique(self):
@@ -651,6 +662,10 @@ class GlobalReIDManager:
                     "promotions": self._n_promotions,
                     "revivals": self._n_revivals,
                     "new_confirmed": self._n_new_confirmed,
+                    "sticky_hits": self._n_sticky_hits,
+                    "sticky_misses": self._n_sticky_misses,
+                    "sticky_pending": len(self._sticky_map),
+                    "bank_intrusions_rejected": self._n_bank_intrusions_rejected,
                 }
             }
 
@@ -658,156 +673,246 @@ class GlobalReIDManager:
     # Внутренние методы (вызываются под self._lk)
     # ────────────────────────────────────────────────────────────────────────
 
+    def _try_sticky_verify(self, tent):
+        """
+        Soft sticky verification.
+
+        У tentative есть sticky_candidate_cid — был ассоциирован с этим cid
+        раньше через ту же (cam, lid) пару. Проверяем через ReID что это
+        действительно тот же человек:
+        - сравниваем bank tentative с bank сохранённого cid
+        - top-K mean distance
+        - если < STICKY_THRESHOLD — подтверждаем (sticky-revival)
+        - иначе отпускаем sticky (это другой человек после ID swap)
+
+        Возвращает cid если sticky подтверждён, иначе None.
+        В обоих случаях устанавливает tent.sticky_resolved = True чтобы
+        не повторять верификацию (одной попытки достаточно).
+        """
+        tent.sticky_resolved = True
+        sticky_cid = tent.sticky_candidate_cid
+        tent.sticky_candidate_cid = None  # очищаем независимо от результата
+
+        ct = self._confirmed.get(sticky_cid)
+        if ct is None or not ct.bank or not tent.descs:
+            return None
+
+        # Bank-vs-bank distance
+        tent_bank = np.stack(tent.descs).astype(np.float32)
+        tent_bank = tent_bank / np.maximum(
+            np.linalg.norm(tent_bank, axis=1, keepdims=True), 1e-9
+        )
+        cand_bank = np.stack(ct.bank).astype(np.float32)
+        cand_bank = cand_bank / np.maximum(
+            np.linalg.norm(cand_bank, axis=1, keepdims=True), 1e-9
+        )
+        sim = tent_bank @ cand_bank.T
+        flat = sim.flatten()
+        k = min(MATCH_TOP_K, len(flat))
+        top_k_mean = float(np.sort(flat)[-k:].mean())
+        dist = 1.0 - top_k_mean
+
+        # Twin rule: если этот cid сейчас ACTIVE на нашей же камере
+        # (через другой tentative) — не делаем sticky, это бы создало
+        # конфликт. Это редкий случай но защищает от состояния
+        # "два tentative на одной камере ассоциированы с одним cid".
+        if ct.status == STATUS_ACTIVE:
+            for t in self._tentative.values():
+                if (t.cam == tent.cam and t is not tent
+                        and t.confirmed_id == sticky_cid):
+                    if DEBUG_PROMOTION:
+                        print(f"[sticky] tent=(cam={tent.cam},lid={tent.lid}) "
+                              f"sticky_cid={sticky_cid} dist={dist:.3f} "
+                              f"→ REJECTED (twin on same cam)")
+                    self._n_sticky_misses += 1
+                    return None
+
+        if dist < STICKY_THRESHOLD:
+            # Подтверждено — sticky revival
+            if DEBUG_PROMOTION:
+                print(f"[sticky] tent=(cam={tent.cam},lid={tent.lid}) "
+                      f"descs={len(tent.descs)} sticky_cid={sticky_cid} "
+                      f"dist={dist:.3f} → CONFIRMED")
+            self._n_sticky_hits += 1
+            if ct.status == STATUS_DORMANT:
+                ct.revive(self._frame)
+                self._n_revivals += 1
+            rejected = ct.add_descs(tent.descs, tent.last_wx, tent.last_wy,
+                                    self._frame)
+            self._n_bank_intrusions_rejected += rejected
+            tent.confirmed_id = sticky_cid
+            return sticky_cid
+        else:
+            # ReID не подтверждает — другой человек, пускаем обычный pipeline
+            if DEBUG_PROMOTION:
+                print(f"[sticky] tent=(cam={tent.cam},lid={tent.lid}) "
+                      f"descs={len(tent.descs)} sticky_cid={sticky_cid} "
+                      f"dist={dist:.3f} → REJECTED (ReID mismatch)")
+            self._n_sticky_misses += 1
+            return None
+
     def _promote_tentative(self, tent):
         """
         Tentative накопил CONFIRMATION_FRAMES descriptors. Время решать
-        кто он: новый человек, возрождение DORMANT, или слияние с ACTIVE
-        (тот же человек одновременно виден на другой камере).
+        кто он: новый человек, или revival DORMANT, или unification с
+        ACTIVE-на-другой-камере (cross-camera matching).
 
         Возвращает confirmed_id.
+
+        Стратегия матчинга (3 типа кандидатов):
+
+        1) ACTIVE на ДРУГИХ камерах (НЕ на cam tent.cam): один и тот же
+           человек может одновременно быть виден несколькими камерами.
+           ByteTrack на каждой камере независимо создаёт local_id, и наша
+           задача — связать их в один cid. БЕЗ этого мы получаем
+           фрагментацию одного человека на разные G# для каждой камеры.
+
+           ВАЖНО: ACTIVE на ТЕКУЩЕЙ tent.cam ИСКЛЮЧЕНЫ (twin rule):
+           один ByteTrack local_id уже отвечает за этого человека на
+           этой камере; новый local_id здесь — это ДРУГОЙ человек.
+
+        2) DORMANT (везде): человек ушёл из всех камер и вернулся в
+           течение DORMANT_TTL_FRAMES. Классический re-identification.
+
+        3) Новый cid: если ни один кандидат не подходит достаточно
+           уверенно (см. gap check ниже).
+
+        Gap check: revival происходит ТОЛЬКО если разница между лучшим
+        и вторым кандидатом >= MATCH_GAP. Это защищает от случайного
+        матчинга когда у нас несколько похожих кандидатов с близкими
+        distances (например 0.17 / 0.19 / 0.22 — все ниже порога, но
+        неуверенно). Без gap check мы случайно выбираем одного из них,
+        что приводит к перепутыванию людей и загрязнению banks.
         """
         self._n_promotions += 1
 
-        cam_by_cid = {}
-        max_frame_by_cid = {}
-        for t in self._tentative.values():
-            if t.confirmed_id is not None:
-                cam_by_cid.setdefault(t.confirmed_id, set()).add(t.cam)
-                prev = max_frame_by_cid.get(t.confirmed_id, 0)
-                if t.last_frame > prev:
-                    max_frame_by_cid[t.confirmed_id] = t.last_frame
-
-        active_cids = {ct.cid for ct in self._confirmed.values()
-                       if ct.status == STATUS_ACTIVE}
-
-        candidates = []
-        n_presence_rejected = 0
+        # Текущие ACTIVE cid'ы по камерам — для twin rule.
+        active_cids_on_my_cam = set()
         for ct in self._confirmed.values():
-            if ct.cid not in active_cids and ct.status == STATUS_DORMANT:
-                candidates.append(ct)
-            elif ct.cid in active_cids:
-                cams_with_cid = cam_by_cid.get(ct.cid, set())
-                if tent.cam in cams_with_cid:
-                    continue
-                last_seen_on_other = max_frame_by_cid.get(ct.cid, 0)
-                if (self._frame - last_seen_on_other) < ACTIVE_PRESENCE_GRACE_FRAMES:
-                    n_presence_rejected += 1
-                    continue
-                dx = tent.last_wx - ct.last_wx
-                dy = tent.last_wy - ct.last_wy
-                spatial_dist = math.sqrt(dx * dx + dy * dy)
-                if spatial_dist <= SPATIAL_GATE_ACTIVE:
-                    candidates.append(ct)
-
-        # Считаем сколько ACTIVE отсечено spatial gate (для debug)
-        n_spatial_rejected = 0
-        active_cids_for_gate = {ct.cid for ct in self._confirmed.values()
-                                if ct.status == STATUS_ACTIVE}
-        for ct_cid in active_cids_for_gate:
-            cams_with = cam_by_cid.get(ct_cid, set())
-            if tent.cam in cams_with:
+            if ct.status != STATUS_ACTIVE:
                 continue
-            ct = self._confirmed[ct_cid]
-            dx = tent.last_wx - ct.last_wx
-            dy = tent.last_wy - ct.last_wy
-            sd = math.sqrt(dx * dx + dy * dy)
-            if sd > SPATIAL_GATE_ACTIVE:
-                n_spatial_rejected += 1
+            # Проверим есть ли у этого cid tentative track на нашей камере.
+            for t in self._tentative.values():
+                if t.cam == tent.cam and t.confirmed_id == ct.cid:
+                    active_cids_on_my_cam.add(ct.cid)
+                    break
 
-        best_cid = None
-        best_cctr = 1.0
-        best_threshold = 1.0
-        all_dists = []
+        # Кандидаты для матчинга:
+        # - ACTIVE на ДРУГИХ камерах (не на нашей)
+        # - DORMANT везде
+        candidates = []
+        for ct in self._confirmed.values():
+            if ct.cid in active_cids_on_my_cam:
+                continue  # twin rule: уже представлен на нашей камере
+            if ct.status == STATUS_ACTIVE or ct.status == STATUS_DORMANT:
+                candidates.append(ct)
+
+        all_dists = []  # для логирования (cid, dist, status)
 
         if candidates and tent.descs:
             tent_bank = np.stack(tent.descs).astype(np.float32)
             tent_bank = tent_bank / np.maximum(
                 np.linalg.norm(tent_bank, axis=1, keepdims=True), 1e-9
             )
-            tent_centroid = tent_bank.mean(axis=0)
-            tn = float(np.linalg.norm(tent_centroid))
-            if tn > 0:
-                tent_centroid = tent_centroid / tn
             for ct in candidates:
-                if ct.centroid is None:
+                if not ct.bank:
                     continue
-                cctr = 1.0 - float(np.dot(tent_centroid, ct.centroid))
-                threshold = (MATCH_CENTROID_ACTIVE
-                             if ct.status == STATUS_ACTIVE
-                             else MATCH_CENTROID_DORMANT)
-                reject_reason = None
-                if cctr >= threshold:
-                    reject_reason = f"cctr={cctr:.3f}>={threshold:.2f}"
-                if reject_reason is None:
-                    dx = tent.last_wx - ct.last_wx
-                    dy = tent.last_wy - ct.last_wy
-                    sd = math.sqrt(dx * dx + dy * dy)
-                    gate = (SPATIAL_GATE_ACTIVE_MERGE
-                            if ct.status == STATUS_ACTIVE
-                            else SPATIAL_GATE_DORMANT_MERGE)
-                    if sd > gate:
-                        reject_reason = f"sdist={sd:.1f}m>{gate}m"
-                tag = "A" if ct.status == STATUS_ACTIVE else "D"
-                all_dists.append((ct.cid, cctr, tag, reject_reason))
-                if reject_reason is None and cctr < best_cctr:
-                    best_cctr = cctr
-                    best_cid = ct.cid
-                    best_threshold = threshold
+                cand_bank = np.stack(ct.bank).astype(np.float32)
+                cand_bank = cand_bank / np.maximum(
+                    np.linalg.norm(cand_bank, axis=1, keepdims=True), 1e-9
+                )
+                # Cosine similarity matrix → flat sorted top-K mean
+                sim = tent_bank @ cand_bank.T  # (M, N)
+                flat = sim.flatten()
+                k = min(MATCH_TOP_K, len(flat))
+                top_k_mean = float(np.sort(flat)[-k:].mean())
+                dist = 1.0 - top_k_mean
+                all_dists.append((ct.cid, dist, ct.status))
 
+        # Сортируем кандидатов по distance (меньше = лучше)
+        all_dists.sort(key=lambda x: x[1])
+
+        best_cid = None
+        decision_reason = ""
+
+        if all_dists:
+            best = all_dists[0]
+            best_dist = best[1]
+            best_status = best[2]
+
+            # Двухуровневая логика принятия решения:
+            #
+            # 1) CONFIDENT zone (best_dist < MATCH_CONFIDENT=0.15):
+            #    Матч уверенный сам по себе. Принимаем БЕЗ gap check.
+            #    Это критично для multi-person сцен где descriptors похожих
+            #    людей близки — gap может быть мал, но best всё равно
+            #    значимо лучше остальных.
+            #
+            # 2) UNCERTAIN zone (MATCH_CONFIDENT <= best_dist < MATCH_BANK_VS_BANK):
+            #    Матч приемлемый, но требуем gap >= MATCH_GAP чтобы
+            #    отличить от случайных совпадений.
+            #
+            # 3) REJECT (best_dist >= MATCH_BANK_VS_BANK):
+            #    Слишком далеко — создаём NEW.
+
+            if best_dist < MATCH_CONFIDENT:
+                # CONFIDENT: принимаем без gap check
+                best_cid = best[0]
+                prefix = ("REVIVE" if best_status == STATUS_DORMANT
+                          else "MERGE-ACTIVE")
+                decision_reason = f"{prefix}→cid={best_cid} (confident)"
+            elif best_dist < MATCH_BANK_VS_BANK:
+                # UNCERTAIN: gap check обязателен
+                if len(all_dists) >= 2:
+                    second_dist = all_dists[1][1]
+                    gap = second_dist - best_dist
+                    if gap < MATCH_GAP:
+                        decision_reason = (f"NEW (uncertain: gap={gap:.3f}<"
+                                           f"{MATCH_GAP}, best={best_dist:.3f})")
+                    else:
+                        best_cid = best[0]
+                        prefix = ("REVIVE" if best_status == STATUS_DORMANT
+                                  else "MERGE-ACTIVE")
+                        decision_reason = f"{prefix}→cid={best_cid} (gap={gap:.3f})"
+                else:
+                    # Один кандидат и он в uncertain zone — рискнём матчем
+                    best_cid = best[0]
+                    prefix = ("REVIVE" if best_status == STATUS_DORMANT
+                              else "MERGE-ACTIVE")
+                    decision_reason = f"{prefix}→cid={best_cid} (single uncertain)"
+            else:
+                decision_reason = (f"NEW (best dist {best_dist:.3f}>="
+                                   f"{MATCH_BANK_VS_BANK})")
+        else:
+            decision_reason = "NEW (no candidates)"
+
+        # Debug-логирование
         if DEBUG_PROMOTION:
             tent_size = len(tent.descs)
-            n_dormant = sum(1 for _, _, t, _ in all_dists if t == "D")
-            n_active = sum(1 for _, _, t, _ in all_dists if t == "A")
-            n_rejected = sum(1 for _, _, _, v in all_dists if v is not None)
-            tent_pos = f"({tent.last_wx:.1f},{tent.last_wy:.1f})"
-            if all_dists:
-                top3 = sorted(all_dists, key=lambda x: x[1])[:3]
+            candidate_count = len(candidates)
+            if candidate_count > 0 and all_dists:
+                top3 = all_dists[:3]
                 top3_str = ", ".join(
-                    f"cid={c}:{d:.3f}({t})"
-                    + (f" REJ({v})" if v else "")
-                    for c, d, t, v in top3)
-                if best_cid is not None:
-                    ct = self._confirmed[best_cid]
-                    best_pos = f"({ct.last_wx:.1f},{ct.last_wy:.1f})"
-                    best_sdist = math.sqrt(
-                        (tent.last_wx - ct.last_wx) ** 2 +
-                        (tent.last_wy - ct.last_wy) ** 2)
-                    action = "MERGE" if ct.status == STATUS_ACTIVE else "REVIVE"
-                    decision = (f"{action}→cid={best_cid} "
-                               f"pos={tent_pos}→{best_pos} "
-                               f"sdist={best_sdist:.1f}m")
-                else:
-                    best_rej = ""
-                    if top3 and top3[0][3] is not None:
-                        best_rej = f" rej={top3[0][3]}"
-                    decision = (f"NEW pos={tent_pos} "
-                               f"(best cctr {best_cctr:.3f}{best_rej})")
+                    f"cid={c}({'A' if s == STATUS_ACTIVE else 'D'}):{d:.3f}"
+                    for c, d, s in top3
+                )
                 print(f"[promote] tent=(cam={tent.cam},lid={tent.lid}) "
-                      f"descs={tent_size} "
-                      f"cands(d={n_dormant},a={n_active},"
-                      f"sp_rej={n_spatial_rejected},"
-                      f"pr_rej={n_presence_rejected},"
-                      f"rej={n_rejected}) "
-                      f"top3={{{top3_str}}} → {decision}")
+                      f"descs={tent_size} candidates={candidate_count} "
+                      f"top3={{{top3_str}}} → {decision_reason}")
             else:
                 print(f"[promote] tent=(cam={tent.cam},lid={tent.lid}) "
-                      f"descs={tent_size} pos={tent_pos} "
-                      f"no_cands(sp_rej={n_spatial_rejected},"
-                      f"pr_rej={n_presence_rejected}) → NEW")
+                      f"descs={tent_size} no_candidates → {decision_reason}")
 
         if best_cid is not None:
+            # Revival (DORMANT) или Merge (ACTIVE на другой камере)
             ct = self._confirmed[best_cid]
             if ct.status == STATUS_DORMANT:
                 ct.revive(self._frame)
                 self._n_revivals += 1
-            elif ct.status == STATUS_ACTIVE:
-                ct.pending_dormant_since_frame = None
-            n_add, n_rej, max_rd = ct.add_descs(
-                tent.descs, tent.last_wx, tent.last_wy, self._frame)
-            if n_rej > 0:
-                self._purity_rej_merge += n_rej
-                self._purity_max_dist = max(
-                    self._purity_max_dist, max_rd)
+            # Для ACTIVE: уже active, просто добавляем descriptors
+            rejected = ct.add_descs(tent.descs, tent.last_wx, tent.last_wy,
+                                    self._frame)
+            self._n_bank_intrusions_rejected += rejected
             tent.confirmed_id = best_cid
             return best_cid
 

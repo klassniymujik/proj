@@ -38,7 +38,7 @@ class CameraConfig(BaseModel):
     y: float = 0
     height: float = 3.0
     yaw: float = 0.0
-    pitch: float = -150.0
+    pitch: float = -60.0
     fov: float = 90.0
     img_width: int = 1280
     img_height: int = 720

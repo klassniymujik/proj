@@ -515,7 +515,6 @@ class AnalyticsPage {
       trail.cameraId = trail.refCam;
       trail.points.push(new THREE.Vector3(sx, 0.08, sz));
       if (trail.points.length > MAX_TRAIL_POINTS) trail.points.shift();
-      trail.line.geometry.dispose();
       trail.line.geometry.setFromPoints(trail.points);
       trail.dot.position.set(sx, 0.1, sz);
       // Восстанавливаем видимость dot — если он был скрыт после stale
